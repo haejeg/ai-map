@@ -30,6 +30,9 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.SpatialNav">
+        <!-- Optional GPU acceleration for the on-device model (LiteRT-LM); falls back to CPU without them. -->
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+        <uses-native-library android:name="libvndksupport.so" android:required="false" />
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"

@@ -80,6 +80,8 @@ fun SettingsScreen(
     keys: Map<ApiService, KeyStatus>,
     simulateHeading: Boolean,
     heading: Double,
+    assistant: AssistantSettingsState,
+    assistantActions: AssistantSettingsActions,
     actions: SettingsActions,
 ) {
     // Surface consumes touches, so nothing reaches the map screen underneath.
@@ -98,6 +100,8 @@ fun SettingsScreen(
                 }
                 Text("Settings", style = MaterialTheme.typography.headlineSmall)
             }
+            Text("Assistant", style = MaterialTheme.typography.titleMedium, color = Palette.Blue)
+            AssistantSection(assistant, assistantActions)
             Text("API keys", style = MaterialTheme.typography.titleMedium, color = Palette.Blue)
             Text(
                 "Keys are stored only on this device, encrypted with a key held in the Android Keystore, and are " +

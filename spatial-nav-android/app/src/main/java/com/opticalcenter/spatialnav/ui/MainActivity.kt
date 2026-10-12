@@ -19,6 +19,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.opticalcenter.spatialnav.settings.ApiService
 import org.maplibre.android.MapLibre
 
 class MainActivity : ComponentActivity() {
@@ -88,6 +89,22 @@ class MainActivity : ComponentActivity() {
                         keys = state.keys,
                         simulateHeading = state.simulateHeading,
                         heading = state.telemetry.pose.heading,
+                        assistant = AssistantSettingsState(
+                            mode = state.assistantMode,
+                            selectedModelId = state.localModelId,
+                            modelStatus = state.modelStatus,
+                            activeLabel = state.assistantLabel,
+                            loading = state.modelLoading,
+                            hasClaudeKey = state.keys[ApiService.ANTHROPIC]?.preview != null,
+                        ),
+                        assistantActions = AssistantSettingsActions(
+                            onSelectMode = viewModel::setAssistantMode,
+                            onSelectModel = viewModel::selectLocalModel,
+                            onDownload = viewModel::downloadModel,
+                            onPause = viewModel::pauseDownload,
+                            onDelete = viewModel::deleteModel,
+                            onImport = viewModel::importModel,
+                        ),
                         actions = SettingsActions(
                             onBack = { showSettings = false },
                             onSave = viewModel::saveKey,

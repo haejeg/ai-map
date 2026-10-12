@@ -22,6 +22,13 @@ import com.opticalcenter.spatialnav.data.tomtom.TomTomDataSource
 import com.opticalcenter.spatialnav.navigation.NavigationManager
 import com.opticalcenter.spatialnav.navigation.Place
 import com.opticalcenter.spatialnav.navigation.TripState
+import com.opticalcenter.spatialnav.local.LiteRtChat
+import com.opticalcenter.spatialnav.local.LocalAssistant
+import com.opticalcenter.spatialnav.local.LocalModelSpec
+import com.opticalcenter.spatialnav.local.ModelStatus
+import com.opticalcenter.spatialnav.local.ModelStore
+import com.opticalcenter.spatialnav.settings.AppPreferences
+import com.opticalcenter.spatialnav.settings.AssistantMode
 import com.opticalcenter.spatialnav.settings.ApiKeyRepository
 import com.opticalcenter.spatialnav.settings.ApiService
 import com.opticalcenter.spatialnav.settings.KeyStatus
@@ -49,6 +56,10 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import android.net.Uri
+import kotlinx.coroutines.CancellationException
+import java.io.File
+import java.io.IOException
 import kotlin.math.roundToInt
 
 enum class Speaker { USER, TOOL, ASSISTANT }
@@ -82,6 +93,11 @@ data class NavUiState(
     val assistantLabel: String = "",
     val liveData: Boolean = false,
     val keys: Map<ApiService, KeyStatus> = emptyMap(),
+    val assistantMode: AssistantMode = AssistantMode.ON_DEVICE,
+    val localModelId: String = LocalModelSpec.GEMMA_4_E2B.id,
+    val modelStatus: Map<String, ModelStatus> = emptyMap(),
+    /** True while the on-device model is being loaded into memory. */
+    val modelLoading: Boolean = false,
 ) {
     companion object {
         /** Fallback pose until the first GPS fix arrives (Union Square, San Francisco). */
@@ -116,17 +132,25 @@ class NavViewModel(app: Application) : AndroidViewModel(app) {
     )
     private val verifier: KeyVerifier = NetworkKeyVerifier()
 
-    /** Everything that depends on API keys; rebuilt when a key changes. */
+    private val prefs = AppPreferences(app)
+    private val modelStore = ModelStore(File(app.filesDir, "models"))
+    private val modelCacheDir = File(app.cacheDir, "litertlm")
+    private var downloadJob: Job? = null
+
+    /** Map data, navigation and tools: everything that depends on the TomTom key. */
     private class Services(
         val data: MapDataSource,
         val navigation: NavigationManager,
         val tools: NavigationTools,
-        val assistant: Assistant,
         val scope: CoroutineScope,
-        val close: () -> Unit,
     )
 
     private lateinit var services: Services
+
+    /** The assistant answering questions; rebuilt when the mode, model or keys change. */
+    private var assistant: Assistant? = null
+    private var assistantCleanup: () -> Unit = {}
+    private var warmUpJob: Job? = null
 
     private val speechInput = SpeechInput(
         context = app,
@@ -141,19 +165,27 @@ class NavViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         _state.update { it.copy(speechInputAvailable = speechInput.isAvailable) }
+        _state.update { it.copy(assistantMode = prefs.assistantMode, localModelId = prefs.localModel.id) }
         rebuildServices()
         viewModelScope.launch { keys.revision.drop(1).collect { rebuildServices() } }
         viewModelScope.launch { keys.status.collect { status -> _state.update { it.copy(keys = status) } } }
+        viewModelScope.launch {
+            modelStore.status.collect { status ->
+                val wasReady = _state.value.modelStatus[prefs.localModel.id] is ModelStatus.Ready
+                _state.update { it.copy(modelStatus = status) }
+                val isReady = status[prefs.localModel.id] is ModelStatus.Ready
+                // The selected model just finished downloading (or was deleted): switch assistants.
+                if (wasReady != isReady && prefs.assistantMode == AssistantMode.ON_DEVICE) rebuildAssistant()
+            }
+        }
     }
 
     private fun rebuildServices() {
         if (::services.isInitialized) {
             services.navigation.stop()
             services.scope.cancel()
-            services.close()
         }
         val tomTomKey = keys.key(ApiService.TOMTOM)
-        val claudeKey = keys.key(ApiService.ANTHROPIC)
         val scope = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]))
 
         val data: MapDataSource = tomTomKey?.let { TomTomDataSource(it) }
@@ -169,29 +201,137 @@ class NavViewModel(app: Application) : AndroidViewModel(app) {
             travelHeading = { if (isCourseFresh()) _state.value.telemetry.pose.heading else null },
         )
         val tools = NavigationTools(telemetry = { _state.value.telemetry }, data = data, navigation = navigation)
-        val claudeClient = claudeKey?.let { AnthropicOkHttpClient.builder().apiKey(it).build() }
-        val assistant: Assistant = claudeClient?.let { ClaudeAssistant(tools, it) } ?: Agent(tools)
 
-        services = Services(data, navigation, tools, assistant, scope, close = { claudeClient?.close() })
+        services = Services(data, navigation, tools, scope)
         scope.launch { navigation.trip.collect { trip -> _state.update { it.copy(trip = trip) } } }
+        _state.update { it.copy(liveData = data.supportsRouting, trafficTileKey = tomTomKey, searchResults = emptyList()) }
+        rebuildAssistant()
+    }
 
-        val missing = ApiService.entries.filter { keys.key(it) == null }
+    /** Pick the assistant for the current mode, falling back to the basic one when its requirement is missing. */
+    private fun rebuildAssistant() {
+        warmUpJob?.cancel()
+        assistantCleanup()
+        assistantCleanup = {}
+        val tools = services.tools
+        val basic = Agent(tools)
+
+        val chosen: Assistant = when (prefs.assistantMode) {
+            AssistantMode.ON_DEVICE -> {
+                val spec = prefs.localModel
+                modelStore.readyFile(spec)?.let { file ->
+                    val chat = LiteRtChat(file, spec.name, modelCacheDir, LocalAssistant.SYSTEM_PROMPT, NavigationTools.DEFINITIONS)
+                    LocalAssistant(chat, tools, fallback = basic, modelName = spec.name).also { local ->
+                        assistantCleanup = { local.close() }
+                        warmUp(local)
+                    }
+                } ?: basic
+            }
+            AssistantMode.CLAUDE -> keys.key(ApiService.ANTHROPIC)?.let { key ->
+                val client = AnthropicOkHttpClient.builder().apiKey(key).build()
+                assistantCleanup = { client.close() }
+                ClaudeAssistant(tools, client)
+            } ?: basic
+            AssistantMode.BASIC -> basic
+        }
+        assistant = chosen
+        _state.update { it.copy(assistantLabel = chosen.label) }
+        refreshNotice()
+    }
+
+    /** Load the on-device model in the background so the first question doesn't wait for it. */
+    private fun warmUp(local: LocalAssistant) {
+        _state.update { it.copy(modelLoading = true) }
+        warmUpJob = viewModelScope.launch {
+            try {
+                local.warmUp()
+                _state.update { it.copy(assistantLabel = local.label) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                showNotice("The on-device model couldn't load (${e.message}). Using the basic assistant for now.")
+            } finally {
+                _state.update { it.copy(modelLoading = false) }
+            }
+        }
+    }
+
+    /** One banner for whatever setup is missing, most important first. */
+    private fun refreshNotice() {
+        val mode = prefs.assistantMode
+        val needs = buildList {
+            if (mode == AssistantMode.ON_DEVICE && modelStore.readyFile(prefs.localModel) == null) {
+                add("download the on-device AI model")
+            }
+            if (mode == AssistantMode.CLAUDE && keys.key(ApiService.ANTHROPIC) == null) add("add a Claude key")
+            if (keys.key(ApiService.TOMTOM) == null) add("add a TomTom key for live maps")
+        }
         _state.update {
             it.copy(
-                assistantLabel = assistant.label,
-                liveData = data.supportsRouting,
-                trafficTileKey = tomTomKey,
-                searchResults = emptyList(),
                 notice = when {
-                    missing.isNotEmpty() -> Notice(
-                        "Demo mode: add your ${missing.joinToString(" and ") { s -> s.title }} " +
-                            "${if (missing.size == 1) "key" else "keys"}. Tap to open settings.",
+                    needs.isNotEmpty() -> Notice(
+                        "Setup: ${needs.joinToString(" and ")}. Tap to open settings.",
                         opensSettings = true,
                     )
                     !headingSensor.isAvailable -> Notice("No compass sensor; use Simulate heading.")
                     else -> it.notice?.takeUnless { n -> n.opensSettings }
                 },
             )
+        }
+    }
+
+    // --- Assistant & on-device model ---------------------------------------
+
+    fun setAssistantMode(mode: AssistantMode) {
+        if (mode == prefs.assistantMode) return
+        prefs.assistantMode = mode
+        _state.update { it.copy(assistantMode = mode) }
+        rebuildAssistant()
+    }
+
+    fun selectLocalModel(spec: LocalModelSpec) {
+        if (spec == prefs.localModel) return
+        prefs.localModel = spec
+        _state.update { it.copy(localModelId = spec.id) }
+        if (prefs.assistantMode == AssistantMode.ON_DEVICE) rebuildAssistant()
+    }
+
+    fun downloadModel(spec: LocalModelSpec) {
+        if (downloadJob?.isActive == true) return
+        downloadJob = viewModelScope.launch {
+            try {
+                modelStore.download(spec)
+            } catch (e: IOException) {
+                showNotice(e.message ?: "The model download failed.")
+            }
+        }
+    }
+
+    fun pauseDownload() {
+        downloadJob?.cancel()
+    }
+
+    fun deleteModel(spec: LocalModelSpec) {
+        if (spec == prefs.localModel && prefs.assistantMode == AssistantMode.ON_DEVICE) {
+            // Release the model file before deleting it.
+            assistantCleanup()
+            assistantCleanup = {}
+        }
+        modelStore.delete(spec)
+    }
+
+    /** Install a model file the user picked (e.g. copied over USB) as [spec]. */
+    fun importModel(spec: LocalModelSpec, uri: Uri) {
+        val resolver = getApplication<Application>().contentResolver
+        if (downloadJob?.isActive == true) return
+        downloadJob = viewModelScope.launch {
+            try {
+                val size = resolver.openFileDescriptor(uri, "r")?.use { it.statSize }?.takeIf { it > 0 }
+                val input = resolver.openInputStream(uri) ?: throw IOException("Couldn't open that file.")
+                modelStore.import(spec, input, size)
+            } catch (e: IOException) {
+                showNotice(e.message ?: "Couldn't import the model file.")
+            }
         }
     }
 
@@ -377,7 +517,7 @@ class NavViewModel(app: Application) : AndroidViewModel(app) {
         if (text.isEmpty()) return
         appendLog(Speaker.USER, text)
         _state.update { it.copy(thinking = true) }
-        val assistant = services.assistant
+        val assistant = assistant ?: return
         viewModelScope.launch {
             val result = assistant.respond(text)
             for (step in result.trace) {
@@ -421,7 +561,7 @@ class NavViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         services.navigation.stop()
-        services.close()
+        assistantCleanup()
         speechInput.destroy()
         speechOutput.shutdown()
     }

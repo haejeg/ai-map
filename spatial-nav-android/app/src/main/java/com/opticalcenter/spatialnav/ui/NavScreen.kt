@@ -423,10 +423,14 @@ private fun AskPill(state: NavUiState, conversationOpen: Boolean, onToggleConver
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    state.thinking -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    state.thinking || state.modelLoading -> Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Palette.Blue)
                         Spacer(Modifier.width(10.dp))
-                        Text("Thinking…", color = Palette.OnSurfaceMuted, fontSize = 16.sp)
+                        Text(
+                            if (state.thinking) "Thinking…" else "Loading on-device AI…",
+                            color = Palette.OnSurfaceMuted,
+                            fontSize = 16.sp,
+                        )
                     }
                     else -> Column {
                         Text("Ask anything…", color = Palette.OnSurfaceMuted, fontSize = 16.sp)

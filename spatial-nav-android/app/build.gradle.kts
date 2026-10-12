@@ -40,9 +40,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         compose = true
         buildConfig = true
@@ -51,6 +48,12 @@ android {
         resources {
             excludes += setOf("META-INF/INDEX.LIST", "META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*")
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
@@ -68,6 +71,7 @@ dependencies {
     implementation(libs.maplibre.android)
     implementation(libs.anthropic.java)
     implementation(libs.okhttp)
+    implementation(libs.litertlm.android)
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)
