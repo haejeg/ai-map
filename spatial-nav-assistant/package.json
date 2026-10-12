@@ -1,0 +1,16 @@
+{
+  "name": "spatial-nav-assistant",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Voice-driven AI spatial navigation assistant (MapLibre + Web Speech API).",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/",
+    "check": "node scripts/check-syntax.mjs",
+    "smoke": "node scripts/smoke-browser.mjs",
+    "start": "npx --yes http-server@14.1.1 . -p 8080 -c-1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

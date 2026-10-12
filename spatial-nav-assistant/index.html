@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111418">
+  <title>Spatial Navigation Assistant</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="css/styles.css">
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" defer></script>
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <main class="app">
+    <div id="map" class="map" role="region" aria-label="Map"></div>
+
+    <section class="hud" aria-label="Telemetry">
+      <div class="compass" aria-hidden="true">
+        <span class="compass-n">N</span>
+        <div id="compass-needle" class="compass-needle"></div>
+      </div>
+      <dl>
+        <div><dt>Position</dt><dd id="hud-coords">—</dd></div>
+        <div><dt>Heading</dt><dd id="hud-heading">—</dd></div>
+        <div><dt>Source</dt><dd id="hud-source">—</dd></div>
+      </dl>
+      <button id="recenter" class="icon-btn" type="button" aria-label="Recenter map on me">◎</button>
+    </section>
+
+    <p id="notice" class="notice" role="status" hidden></p>
+
+    <section class="voice-panel" aria-label="Voice assistant">
+      <ol id="log" class="log" aria-live="polite"></ol>
+      <p id="transcript" class="transcript" aria-live="polite"></p>
+
+      <div class="chips">
+        <button type="button" class="chip" data-prompt="What is to my left?">Left?</button>
+        <button type="button" class="chip" data-prompt="What's to my right?">Right?</button>
+        <button type="button" class="chip" data-prompt="What's ahead of me?">Ahead?</button>
+        <button type="button" class="chip" data-prompt="What's behind me?">Behind?</button>
+        <button type="button" class="chip" data-prompt="Where am I?">Where am I?</button>
+        <button type="button" class="chip" data-prompt="Take me to the public library">Go to library</button>
+      </div>
+
+      <button id="ptt" class="ptt" type="button" aria-pressed="false">
+        <span class="ptt-icon" aria-hidden="true">🎙</span>
+        <span id="ptt-label">Hold to talk</span>
+      </button>
+
+      <form id="text-form" class="text-form">
+        <input id="text-input" type="text" placeholder="…or type: what is to my left?" autocomplete="off" aria-label="Type a request">
+        <button type="submit">Send</button>
+      </form>
+
+      <label class="sim">
+        <input id="sim-heading-toggle" type="checkbox">
+        Simulate heading
+        <input id="sim-heading" type="range" min="0" max="359" value="90" disabled aria-label="Simulated heading">
+        <output id="sim-heading-value">90°</output>
+      </label>
+    </section>
+  </main>
+</body>
+</html>

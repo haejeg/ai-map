@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Browser smoke test</title>
+</head>
+<body>
+  <!-- Loads the real app, forces a 90° heading, asks "what is to my left" via
+       the UI, and writes PASS/FAIL into #result and POSTs it to scripts/smoke-browser.mjs. -->
+  <pre id="result">PENDING</pre>
+  <iframe id="app" src="../index.html" style="width:400px;height:800px" allow="geolocation"></iframe>
+  <script>
+    const result = document.getElementById('result');
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    async function waitFor(fn, timeout = 8000) {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        const v = fn();
+        if (v) return v;
+        await wait(50);
+      }
+      throw new Error('timed out waiting for condition');
+    }
+
+    document.getElementById('app').addEventListener('load', async () => {
+      const failures = [];
+      try {
+        const win = document.getElementById('app').contentWindow;
+        const doc = win.document;
+        await waitFor(() => win.appState);
+
+        const toggle = doc.getElementById('sim-heading-toggle');
+        const slider = doc.getElementById('sim-heading');
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change'));
+        slider.value = '90';
+        slider.dispatchEvent(new Event('input'));
+        if (win.appState.heading !== 90) failures.push(`heading is ${win.appState.heading}, expected 90`);
+        if (!/90° E/.test(doc.getElementById('hud-heading').textContent)) failures.push('HUD heading not rendered');
+
+        doc.querySelector('[data-prompt="What is to my left?"]').click();
+        const reply = await waitFor(() => doc.querySelector('.log-assistant'));
+        const tool = doc.querySelector('.log-tool')?.textContent ?? '';
+        if (!tool.includes('get_surrounding_pois({"direction":"left"})')) failures.push(`tool call was: ${tool}`);
+        for (const name of ['Blue Door Coffee', 'Corner Pharmacy', 'General Hospital']) {
+          if (!reply.textContent.includes(name)) failures.push(`reply missing ${name}`);
+        }
+        result.textContent = (failures.length ? 'FAIL\n' + failures.join('\n') : 'PASS') +
+          `\nmap: ${typeof win.maplibregl === 'undefined' ? 'unavailable' : 'loaded'}` +
+          `\nreply: ${reply.textContent}`;
+      } catch (err) {
+        result.textContent = `FAIL\n${err.message}`;
+      }
+      // Report back to scripts/smoke-browser.mjs (harmless when opened manually).
+      fetch('/__result', { method: 'POST', body: result.textContent }).catch(() => {});
+    });
+  </script>
+</body>
+</html>
