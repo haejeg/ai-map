@@ -23,6 +23,8 @@ class LocalAssistant(
     private val tools: NavigationTools,
     private val fallback: Assistant,
     private val modelName: String,
+    /** Diagnostics sink (tag-less); the app routes it to Logcat. */
+    private val log: (String) -> Unit = {},
 ) : Assistant, AutoCloseable {
     override val label: String get() = chat.engineLabel ?: "$modelName (on-device)"
 
@@ -44,6 +46,7 @@ class LocalAssistant(
         val trace = mutableListOf<ToolCallTrace>()
         try {
             var turn = chat.sendUser(utterance)
+            log("model turn: tools=${turn.toolCalls} text=${turn.text.take(200)}")
             repeat(MAX_TOOL_ROUNDS) {
                 if (turn.toolCalls.isEmpty()) return@withLock finish(turn.text, trace)
                 val results = turn.toolCalls.map { call ->
@@ -57,12 +60,14 @@ class LocalAssistant(
                     LocalToolResult(call.name, ToolResultJson.toJson(output))
                 }
                 turn = chat.sendToolResults(results)
+                log("model turn: tools=${turn.toolCalls} text=${turn.text.take(200)}")
             }
             finish(turn.text, trace)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             // The model failed (load error, out of memory, malformed output): don't leave the user hanging.
+            log("model failed, using fallback: $e")
             reset()
             val backup = fallback.respond(utterance)
             backup.copy(trace = trace + backup.trace)
@@ -71,7 +76,11 @@ class LocalAssistant(
 
     private fun finish(rawText: String, trace: List<ToolCallTrace>): AgentResult {
         val text = SpokenText.clean(rawText)
-        if (text.isNotEmpty()) return AgentResult(text, trace)
+        if (text.isNotEmpty()) {
+            log("answered by model")
+            return AgentResult(text, trace)
+        }
+        log("empty model reply, using template")
         // The model ran a tool but didn't say anything usable: phrase the last result ourselves.
         val last = trace.lastOrNull()?.output
         return AgentResult(last?.let(MockLlm::composeReply) ?: MockLlm.HELP_TEXT, trace)

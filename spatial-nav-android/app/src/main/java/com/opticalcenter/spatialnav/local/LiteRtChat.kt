@@ -69,13 +69,18 @@ class LiteRtChat(
         }
         var last: Throwable? = null
         for ((label, backend) in attempts) {
+            var e: Engine? = null
             try {
-                val e = Engine(EngineConfig(modelPath = modelFile.absolutePath, backend = backend, cacheDir = cacheDir.absolutePath))
+                e = Engine(EngineConfig(modelPath = modelFile.absolutePath, backend = backend, cacheDir = cacheDir.absolutePath))
                 e.initialize()
+                // A backend can initialize yet fail on first generation (e.g. a GPU path that
+                // finds no OpenCL driver), so prove it with a one-token test before trusting it.
+                e.createConversation(ConversationConfig(maxOutputToken = 1)).use { it.sendMessage(Message.user("Hi")) }
                 engineLabel = "$modelName · $label"
                 return e
             } catch (t: Throwable) {
                 last = t
+                runCatching { e?.close() }
             }
         }
         throw IllegalStateException("Couldn't load $modelName: ${last?.message}", last)

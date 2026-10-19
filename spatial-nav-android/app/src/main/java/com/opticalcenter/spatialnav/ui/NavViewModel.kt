@@ -221,7 +221,7 @@ class NavViewModel(app: Application) : AndroidViewModel(app) {
                 val spec = prefs.localModel
                 modelStore.readyFile(spec)?.let { file ->
                     val chat = LiteRtChat(file, spec.name, modelCacheDir, LocalAssistant.SYSTEM_PROMPT, NavigationTools.DEFINITIONS)
-                    LocalAssistant(chat, tools, fallback = basic, modelName = spec.name).also { local ->
+                    LocalAssistant(chat, tools, fallback = basic, modelName = spec.name, log = { android.util.Log.i("LocalAssistant", it) }).also { local ->
                         assistantCleanup = { local.close() }
                         warmUp(local)
                     }
